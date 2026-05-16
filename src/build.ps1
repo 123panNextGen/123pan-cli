@@ -12,5 +12,5 @@ upx --best --lzma 123pan-cli.exe
 
 Compress-Archive `
     -Path 123pan-cli.exe `
-    -DestinationPath 123pan-windows.zip `
+    -DestinationPath 123pan-cli-windows.zip `
     -Force

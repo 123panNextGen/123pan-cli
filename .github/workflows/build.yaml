@@ -45,7 +45,7 @@ jobs:
         with:
           name: linux-build
           path: |
-            src/123pan-cli.zip
+            src/123pan-cli-linux.zip
 
   build-windows:
     name: Build Windows
@@ -95,7 +95,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            release/123pan-cli.zip
+            release/123pan-cli-linux.zip
             release/123pan-cli-windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

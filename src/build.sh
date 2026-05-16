@@ -12,4 +12,4 @@ go build -ldflags="-s -w" -trimpath -o 123pan-cli main.go
 
 upx --best --lzma 123pan-cli
 
-zip -9 123pan-cli.zip 123pan-cli
+zip -9 123pan-cli-linux.zip 123pan-cli
