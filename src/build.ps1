@@ -3,7 +3,9 @@
 
 choco install upx -y
 
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 `
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+$env:CGO_ENABLED = "0"
 go build -ldflags="-s -w" -trimpath -o 123pan-cli.exe main.go
 
 upx --best --lzma 123pan-cli.exe
