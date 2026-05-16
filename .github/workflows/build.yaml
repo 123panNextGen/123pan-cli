@@ -1,0 +1,101 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号 (例如: v3.0.3)"
+        required: true
+        type: string
+      prerelease:
+        description: "是否为预发布版本"
+        required: false
+        type: boolean
+        default: false    
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Grant execute permission
+        run: chmod +x ./src/build.sh
+
+      - name: Build Linux binary
+        working-directory: ./src
+        run: ./build.sh
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: |
+            src/123pan-cli.zip
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Build Windows binary
+        working-directory: ./src
+        run: ./bulid.ps1
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-build
+          path: |
+            src/123pan-cli-windows.zip
+
+  release:
+    name: Create Release
+    needs:
+      - build-linux
+      - build-windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-build
+          path: ./release
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-build
+          path: ./release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            release/123pan-cli.zip
+            release/123pan-cli-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
