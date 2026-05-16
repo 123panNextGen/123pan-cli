@@ -62,7 +62,7 @@ jobs:
 
       - name: Build Windows binary
         working-directory: ./src
-        run: ./bulid.ps1
+        run: .\bulid.ps1
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7
