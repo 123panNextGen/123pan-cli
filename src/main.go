@@ -1,16 +1,24 @@
 package main
 
 import (
-    "bytes"
-    "encoding/json"
-    "fmt"
-    "io"
-    "net/http"
-    "os"
-    "path/filepath"
-    "strconv"
-    "strings"
-    "time"
+	"bufio"
+	"bytes"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"math/rand"
+	"net/http"
+	"net/http/cookiejar"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
 )
 
 const baseURL = "https://www.123pan.com"
@@ -20,28 +28,73 @@ const baseURL = "https://www.123pan.com"
 // ----------------------
 
 type Client struct {
-    Username      string
-    Password      string
-    Authorization string
-    HTTPClient    *http.Client
+	Username      string
+	Password      string
+	Authorization string
+	DeviceType    string
+	OSVersion     string
+	LoginUUID     string
+	HTTPClient    *http.Client
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func NewClient(username, password string) *Client {
-    return &Client{
-        Username: username,
-        Password: password,
-        HTTPClient: &http.Client{
-            Timeout: 30 * time.Second,
-        },
-    }
+	jar, _ := cookiejar.New(nil)
+	deviceTypes := []string{"M2102K1C", "2201122C", "2311BPN23C", "2407FPN8EG", "A401XM"}
+	osVersions := []string{"Android_13", "Android_12", "Android_11", "Android_10"}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	return &Client{
+		Username:   username,
+		Password:   password,
+		DeviceType: deviceTypes[r.Intn(len(deviceTypes))],
+		OSVersion:  osVersions[r.Intn(len(osVersions))],
+		LoginUUID:   randomHex(16),
+		HTTPClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Jar:     jar,
+		},
+	}
 }
 
-func (c *Client) defaultHeaders(req *http.Request) {
-    req.Header.Set("User-Agent", "123pan-go-cli")
-    req.Header.Set("Content-Type", "application/json")
-    if c.Authorization != "" {
-        req.Header.Set("Authorization", c.Authorization)
-    }
+func (c *Client) defaultHeaders(req *http.Request, contentType string) {
+	req.Header.Set("User-Agent", fmt.Sprintf("123pan/v2.4.0(%s;Xiaomi)", c.OSVersion))
+	//req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set("platform", "android")
+	req.Header.Set("devicetype", c.DeviceType)
+	req.Header.Set("devicename", "Xiaomi")
+	req.Header.Set("osversion", c.OSVersion)
+	req.Header.Set("app-version", "61")
+	req.Header.Set("x-app-version", "2.4.0")
+	req.Header.Set("loginuuid", c.LoginUUID)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	if c.Authorization != "" {
+		req.Header.Set("authorization", c.Authorization)
+	}
+}
+
+func readBody(resp *http.Response) ([]byte, error) {
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+func mustJSONError(prefix string, body []byte) error {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return errors.New(prefix + ": empty response")
+	}
+	if len(trimmed) > 300 {
+		trimmed = trimmed[:300]
+	}
+	return fmt.Errorf("%s: %s", prefix, trimmed)
 }
 
 // ----------------------
@@ -49,49 +102,53 @@ func (c *Client) defaultHeaders(req *http.Request) {
 // ----------------------
 
 type LoginResp struct {
-    Code int    `json:"code"`
-    Msg  string `json:"message"`
-    Data struct {
-        Token string `json:"token"`
-    } `json:"data"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		Token string `json:"token"`
+	} `json:"data"`
 }
 
 func (c *Client) Login() error {
-    form := fmt.Sprintf("type=1&passport=%s&password=%s", c.Username, c.Password)
+	form := url.Values{}
+	form.Set("type", "1")
+	form.Set("passport", c.Username)
+	form.Set("password", c.Password)
 
-    req, err := http.NewRequest("POST", baseURL+"/b/api/user/sign_in", strings.NewReader(form))
-    if err != nil {
-        return err
-    }
+	req, err := http.NewRequest("POST", baseURL+"/b/api/user/sign_in", strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	c.defaultHeaders(req, "application/x-www-form-urlencoded")
 
-    req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-    req.Header.Set("User-Agent", "123pan-go-cli")
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	body, err := readBody(resp)
+	if err != nil {
+		return err
+	}
 
-    resp, err := c.HTTPClient.Do(req)
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
+	var result LoginResp
+	if err := json.Unmarshal(body, &result); err != nil {
+		return mustJSONError("登录响应不是JSON", body)
+	}
+	if result.Code != 200 {
+		if result.Message == "" {
+			result.Message = "unknown error"
+		}
+		return fmt.Errorf("login failed: %s", result.Message)
+	}
 
-    body, _ := io.ReadAll(resp.Body)
-
-    var result LoginResp
-    if err := json.Unmarshal(body, &result); err != nil {
-        return err
-    }
-
-    if result.Code != 200 {
-        return fmt.Errorf("login failed: %s", result.Msg)
-    }
-
-    c.Authorization = "Bearer " + result.Data.Token
-    fmt.Println("登录成功")
-    return nil
+	c.Authorization = "Bearer " + result.Data.Token
+	fmt.Println("登录成功")
+	return nil
 }
 
 func (c *Client) Logout() {
-    c.Authorization = ""
-    fmt.Println("已退出登录")
+	c.Authorization = ""
+	fmt.Println("已退出登录")
 }
 
 // ----------------------
@@ -99,131 +156,269 @@ func (c *Client) Logout() {
 // ----------------------
 
 type FileItem struct {
-    FileID   int64  `json:"FileId"`
-    FileName string `json:"FileName"`
-    Type     int    `json:"Type"`
-    Size     int64  `json:"Size"`
-    Etag     string `json:"Etag"`
-    S3KeyFlag string `json:"S3KeyFlag"`
+	FileID    int64  `json:"FileId"`
+	FileName  string `json:"FileName"`
+	Type      int    `json:"Type"`
+	Size      int64  `json:"Size"`
+	Etag      string `json:"Etag"`
+	S3KeyFlag string `json:"S3KeyFlag"`
 }
 
 type ListResp struct {
-    Code int `json:"code"`
-    Data struct {
-        InfoList []FileItem `json:"InfoList"`
-    } `json:"data"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		InfoList []FileItem `json:"InfoList"`
+		Total    int        `json:"Total"`
+	} `json:"data"`
 }
 
 func (c *Client) ListFiles() ([]FileItem, error) {
-    url := baseURL + "/api/file/list/new?driveId=0&limit=100&next=0&orderBy=file_id&orderDirection=desc&parentFileId=0&trashed=false&Page=1"
+	endpoint := baseURL + "/api/file/list/new?driveId=0&limit=100&next=0&orderBy=file_id&orderDirection=desc&parentFileId=0&trashed=false&SearchData=&Page=1&OnlyLookAbnormalFile=0"
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.defaultHeaders(req, "application/json")
 
-    req, err := http.NewRequest("GET", url, nil)
-    if err != nil {
-        return nil, err
-    }
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := readBody(resp)
+	if err != nil {
+		return nil, err
+	}
 
-    c.defaultHeaders(req)
-
-    resp, err := c.HTTPClient.Do(req)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-
-    body, _ := io.ReadAll(resp.Body)
-
-    var result ListResp
-    if err := json.Unmarshal(body, &result); err != nil {
-        return nil, err
-    }
-
-    if result.Code != 0 {
-        return nil, fmt.Errorf("list files failed")
-    }
-
-    return result.Data.InfoList, nil
+	var result ListResp
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, mustJSONError("列表响应不是JSON", body)
+	}
+	if result.Code != 0 {
+		if result.Message == "" {
+			result.Message = "list files failed"
+		}
+		return nil, errors.New(result.Message)
+	}
+	return result.Data.InfoList, nil
 }
 
 // ----------------------
-// Get Download Link
+// Download Link
 // ----------------------
 
-type DownloadResp struct {
-    Code int `json:"code"`
-    Data struct {
-        DownloadURL string `json:"DownloadUrl"`
-    } `json:"data"`
+type DownloadInfoResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		DownloadURL string `json:"DownloadUrl"`
+	} `json:"data"`
+}
+
+func (c *Client) getRawDownloadURL(file FileItem) (string, error) {
+	var endpoint string
+	var payload any
+
+	if file.Type == 1 {
+		endpoint = baseURL + "/a/api/file/batch_download_info"
+		payload = map[string]any{
+			"fileIdList": []map[string]int64{{"fileId": file.FileID}},
+		}
+	} else {
+		endpoint = baseURL + "/a/api/file/download_info"
+		payload = map[string]any{
+			"driveId":   0,
+			"etag":      file.Etag,
+			"fileId":    file.FileID,
+			"s3keyFlag": file.S3KeyFlag,
+			"type":      file.Type,
+			"fileName":  file.FileName,
+			"size":      file.Size,
+		}
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(jsonData))
+	if err != nil {
+		return "", err
+	}
+	c.defaultHeaders(req, "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	body, err := readBody(resp)
+	if err != nil {
+		return "", err
+	}
+
+	var result DownloadInfoResp
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", mustJSONError("获取下载信息响应不是JSON", body)
+	}
+	if result.Code != 0 {
+		if result.Message == "" {
+			result.Message = "get link failed"
+		}
+		return "", errors.New(result.Message)
+	}
+	if result.Data.DownloadURL == "" {
+		return "", errors.New("empty DownloadUrl")
+	}
+	return result.Data.DownloadURL, nil
+}
+
+func extractFinalURL(raw string) (string, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	req, err := http.NewRequest("GET", raw, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if loc := resp.Header.Get("Location"); loc != "" {
+		return loc, nil
+	}
+
+	b, _ := io.ReadAll(resp.Body)
+	txt := string(b)
+
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`href='(https?://[^']+)'`),
+		regexp.MustCompile(`href="(https?://[^"]+)"`),
+		regexp.MustCompile(`url=(https?://[^"&']+)`),
+	}
+	for _, re := range patterns {
+		m := re.FindStringSubmatch(txt)
+		if len(m) >= 2 {
+			return m[1], nil
+		}
+	}
+
+	if strings.HasPrefix(strings.TrimSpace(txt), "http://") || strings.HasPrefix(strings.TrimSpace(txt), "https://") {
+		return strings.TrimSpace(txt), nil
+	}
+
+	return "", errors.New("cannot resolve final download url")
 }
 
 func (c *Client) GetDownloadLink(file FileItem) (string, error) {
-    payload := map[string]interface{}{
-        "driveId":   0,
-        "etag":      file.Etag,
-        "fileId":    file.FileID,
-        "s3keyFlag": file.S3KeyFlag,
-        "type":      file.Type,
-        "fileName":  file.FileName,
-        "size":      file.Size,
-    }
-
-    jsonData, _ := json.Marshal(payload)
-
-    req, err := http.NewRequest("POST", baseURL+"/a/api/file/download_info", bytes.NewBuffer(jsonData))
-    if err != nil {
-        return "", err
-    }
-
-    c.defaultHeaders(req)
-
-    resp, err := c.HTTPClient.Do(req)
-    if err != nil {
-        return "", err
-    }
-    defer resp.Body.Close()
-
-    body, _ := io.ReadAll(resp.Body)
-
-    var result DownloadResp
-    if err := json.Unmarshal(body, &result); err != nil {
-        return "", err
-    }
-
-    if result.Code != 0 {
-        return "", fmt.Errorf("get link failed")
-    }
-
-    return result.Data.DownloadURL, nil
+	raw, err := c.getRawDownloadURL(file)
+	if err != nil {
+		return "", err
+	}
+	return extractFinalURL(raw)
 }
 
 // ----------------------
 // Download File
 // ----------------------
 
-func (c *Client) DownloadFile(url, filename string) error {
-    resp, err := c.HTTPClient.Get(url)
-    if err != nil {
-        return err
-    }
-    defer resp.Body.Close()
+func (c *Client) DownloadFile(downloadURL, filename, dir string) error {
+	if dir == "" {
+		dir = "downloads"
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
 
-    if err := os.MkdirAll("downloads", os.ModePerm); err != nil {
-        return err
-    }
+	outPath := filepath.Join(dir, filename)
+	tmpPath := outPath + ".part"
 
-    path := filepath.Join("downloads", filename)
-    out, err := os.Create(path)
-    if err != nil {
-        return err
-    }
-    defer out.Close()
+	if _, err := os.Stat(outPath); err == nil {
+		return fmt.Errorf("file already exists: %s", outPath)
+	}
 
-    _, err = io.Copy(out, resp.Body)
-    if err != nil {
-        return err
-    }
+	req, err := http.NewRequest("GET", downloadURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
 
-    fmt.Println("下载完成:", path)
-    return nil
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("download failed: %s", strings.TrimSpace(string(b)))
+	}
+
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(f, resp.Body)
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return closeErr
+	}
+
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	fmt.Println("下载完成:", outPath)
+	return nil
+}
+
+// ----------------------
+// Helpers
+// ----------------------
+
+func printFiles(files []FileItem) {
+	if len(files) == 0 {
+		fmt.Println("没有文件")
+		return
+	}
+	for i, f := range files {
+		typeName := "文件"
+		if f.Type == 1 {
+			typeName = "文件夹"
+		}
+		fmt.Printf("[%d] %s  (%s, %d bytes)\n", i+1, f.FileName, typeName, f.Size)
+	}
+}
+
+func readLine(scanner *bufio.Scanner, prompt string) string {
+	fmt.Print(prompt)
+	if !scanner.Scan() {
+		return ""
+	}
+	return strings.TrimSpace(scanner.Text())
+}
+
+func usage() {
+	fmt.Println(`命令：
+  list                      列出文件
+  link <编号>               输出文件直链
+  download <编号> [目录]    下载文件到目录，默认 downloads
+  logout                    退出登录
+  help                      显示帮助
+  exit / quit               退出程序`)
 }
 
 // ----------------------
@@ -231,62 +426,112 @@ func (c *Client) DownloadFile(url, filename string) error {
 // ----------------------
 
 func main() {
-    var username, password string
+    fmt.Println("123pan-cli v1.0.0")
+    fmt.Println("https://github.com/123panNextGen/123pan-cli")
+	fmt.Println()
+	usage()
+	fmt.Println()
 
-    fmt.Print("请输入账号: ")
-    fmt.Scanln(&username)
+	var username, password string
+	flag.StringVar(&username, "u", "", "账号")
+	flag.StringVar(&password, "p", "", "密码")
+	flag.Parse()
 
-    fmt.Print("请输入密码: ")
-    fmt.Scanln(&password)
+	scanner := bufio.NewScanner(os.Stdin)
 
-    client := NewClient(username, password)
+	if username == "" {
+		username = readLine(scanner, "请输入账号: ")
+	}
+	if password == "" {
+		password = readLine(scanner, "请输入密码: ")
+	}
+	if username == "" || password == "" {
+		fmt.Println("账号或密码为空")
+		return
+	}
 
-    if err := client.Login(); err != nil {
-        fmt.Println("登录失败:", err)
-        return
-    }
+	client := NewClient(username, password)
+	if err := client.Login(); err != nil {
+		fmt.Println("登录失败:", err)
+		return
+	}
 
-    files, err := client.ListFiles()
-    if err != nil {
-        fmt.Println("获取文件失败:", err)
-        return
-    }
+	files, err := client.ListFiles()
+	if err != nil {
+		fmt.Println("获取文件失败:", err)
+		return
+	}
 
-    fmt.Println("\n文件列表：")
-    for i, f := range files {
-        fmt.Printf("[%d] %s\n", i+1, f.FileName)
-    }
+	for {
+		line := readLine(scanner, "123pan> ")
+		if line == "" {
+			continue
+		}
+		args := strings.Fields(line)
+		switch strings.ToLower(args[0]) {
+		case "list":
+			files, err = client.ListFiles()
+			if err != nil {
+				fmt.Println("获取文件失败:", err)
+				continue
+			}
+			printFiles(files)
 
-    fmt.Print("\n输入文件编号获取直链并下载(输入0退出): ")
-    var input string
-    fmt.Scanln(&input)
+		case "link":
+			if len(args) < 2 {
+				fmt.Println("用法: link <编号>")
+				continue
+			}
+			idx, err := strconv.Atoi(args[1])
+			if err != nil || idx < 1 || idx > len(files) {
+				fmt.Println("编号无效")
+				continue
+			}
+			link, err := client.GetDownloadLink(files[idx-1])
+			if err != nil {
+				fmt.Println("获取链接失败:", err)
+				continue
+			}
+			fmt.Println(link)
 
-    if input == "0" {
-        client.Logout()
-        return
-    }
+		case "download":
+			if len(args) < 2 {
+				fmt.Println("用法: download <编号> [目录]")
+				continue
+			}
+			idx, err := strconv.Atoi(args[1])
+			if err != nil || idx < 1 || idx > len(files) {
+				fmt.Println("编号无效")
+				continue
+			}
+			dir := "downloads"
+			if len(args) >= 3 {
+				dir = args[2]
+			}
+			link, err := client.GetDownloadLink(files[idx-1])
+			if err != nil {
+				fmt.Println("获取链接失败:", err)
+				continue
+			}
+			if err := client.DownloadFile(link, files[idx-1].FileName, dir); err != nil {
+				fmt.Println("下载失败:", err)
+				continue
+			}
 
-    idx, err := strconv.Atoi(input)
-    if err != nil || idx < 1 || idx > len(files) {
-        fmt.Println("编号无效")
-        return
-    }
+		case "logout":
+			client.Logout()
 
-    target := files[idx-1]
+		case "help":
+			usage()
 
-    link, err := client.GetDownloadLink(target)
-    if err != nil {
-        fmt.Println("获取链接失败:", err)
-        return
-    }
+		case "exit", "quit":
+			if client.Authorization != "" {
+				client.Logout()
+			}
+			return
 
-    fmt.Println("\n文件直链：")
-    fmt.Println(link)
-
-    if err := client.DownloadFile(link, target.FileName); err != nil {
-        fmt.Println("下载失败:", err)
-        return
-    }
-
-    client.Logout()
+		default:
+			fmt.Println("未知命令，输入 help 查看帮助")
+		}
+	}
 }
