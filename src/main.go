@@ -55,7 +55,7 @@ func NewClient(username, password string) *Client {
 		Password:   password,
 		DeviceType: deviceTypes[r.Intn(len(deviceTypes))],
 		OSVersion:  osVersions[r.Intn(len(osVersions))],
-		LoginUUID:   randomHex(16),
+		LoginUUID:  randomHex(16),
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Jar:     jar,
@@ -173,8 +173,8 @@ type ListResp struct {
 	} `json:"data"`
 }
 
-func (c *Client) ListFiles() ([]FileItem, error) {
-	endpoint := baseURL + "/api/file/list/new?driveId=0&limit=100&next=0&orderBy=file_id&orderDirection=desc&parentFileId=0&trashed=false&SearchData=&Page=1&OnlyLookAbnormalFile=0"
+func (c *Client) ListFiles(parentFileID int64) ([]FileItem, error) {
+	endpoint := fmt.Sprintf(baseURL+"/api/file/list/new?driveId=0&limit=100&next=0&orderBy=file_id&orderDirection=desc&parentFileId=%d&trashed=false&SearchData=&Page=1&OnlyLookAbnormalFile=0", parentFileID)
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -201,6 +201,13 @@ func (c *Client) ListFiles() ([]FileItem, error) {
 		return nil, errors.New(result.Message)
 	}
 	return result.Data.InfoList, nil
+}
+
+func formatPath(path []string) string {
+	if len(path) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(path, "/")
 }
 
 // ----------------------
@@ -413,9 +420,12 @@ func readLine(scanner *bufio.Scanner, prompt string) string {
 
 func usage() {
 	fmt.Println(`命令：
-  list                      列出文件
+  list                      列出当前目录文件
   link <编号>               输出文件直链
   download <编号> [目录]    下载文件到目录，默认 downloads
+  cd <编号>                 进入文件夹
+  cd ..                     返回上一级
+  pwd                       显示当前目录
   logout                    退出登录
   help                      显示帮助
   exit / quit               退出程序`)
@@ -426,8 +436,8 @@ func usage() {
 // ----------------------
 
 func main() {
-    fmt.Println("123pan-cli v1.0.0")
-    fmt.Println("https://github.com/123panNextGen/123pan-cli")
+	fmt.Println("123pan-cli v1.0.1")
+	fmt.Println("https://github.com/123panNextGen/123pan-cli")
 	fmt.Println()
 	usage()
 	fmt.Println()
@@ -456,7 +466,11 @@ func main() {
 		return
 	}
 
-	files, err := client.ListFiles()
+	currentPath := []string{"根目录"}
+	currentFolderIDs := []int64{0}
+	currentParentID := int64(0)
+
+	files, err := client.ListFiles(currentParentID)
 	if err != nil {
 		fmt.Println("获取文件失败:", err)
 		return
@@ -469,13 +483,56 @@ func main() {
 		}
 		args := strings.Fields(line)
 		switch strings.ToLower(args[0]) {
-		case "list":
-			files, err = client.ListFiles()
+		case "list", "ls":
+			files, err = client.ListFiles(currentParentID)
 			if err != nil {
 				fmt.Println("获取文件失败:", err)
 				continue
 			}
 			printFiles(files)
+
+		case "pwd":
+			fmt.Println(formatPath(currentPath))
+
+		case "cd":
+			if len(args) < 2 {
+				fmt.Println("用法: cd <编号> 或 cd ..")
+				continue
+			}
+			if args[1] == ".." {
+				if len(currentPath) <= 1 {
+					fmt.Println("已在根目录")
+					continue
+				}
+				currentPath = currentPath[:len(currentPath)-1]
+				currentFolderIDs = currentFolderIDs[:len(currentFolderIDs)-1]
+				currentParentID = currentFolderIDs[len(currentFolderIDs)-1]
+				files, err = client.ListFiles(currentParentID)
+				if err != nil {
+					fmt.Println("获取文件失败:", err)
+					continue
+				}
+				continue
+			}
+
+			idx, err := strconv.Atoi(args[1])
+			if err != nil || idx < 1 || idx > len(files) {
+				fmt.Println("编号无效")
+				continue
+			}
+			item := files[idx-1]
+			if item.Type != 1 {
+				fmt.Println("不是文件夹")
+				continue
+			}
+			currentParentID = item.FileID
+			currentFolderIDs = append(currentFolderIDs, currentParentID)
+			currentPath = append(currentPath, item.FileName)
+			files, err = client.ListFiles(currentParentID)
+			if err != nil {
+				fmt.Println("获取文件失败:", err)
+				continue
+			}
 
 		case "link":
 			if len(args) < 2 {
