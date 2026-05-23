@@ -29,6 +29,7 @@
 下载地址：
 
 - Github: https://github.com/123panNextGen/123pan-cli/releases/
+- Website（Cloudflare CDN，更新可能不及时）：https://download.123panng.top/123pan-cli/
 
 >[!TIP]
 >Windows下如果无法运行，可以尝试打开兼容模式。杀毒软件有可能报毒，请放行。
