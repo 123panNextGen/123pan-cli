@@ -34,10 +34,10 @@ jobs:
           go-version: "1.26"
 
       - name: Grant execute permission
-        run: chmod +x ./src/build.sh
+        run: chmod +x ./scripts/build.sh
 
       - name: Build Linux binary
-        working-directory: ./src
+        working-directory: ./scripts
         run: ./build.sh
 
       - name: Upload Linux artifact
@@ -45,7 +45,7 @@ jobs:
         with:
           name: linux-build
           path: |
-            src/123pan-cli-linux.zip
+            scripts/123pan-cli-linux.zip
 
   build-windows:
     name: Build Windows
@@ -61,7 +61,7 @@ jobs:
           go-version: "1.26"
 
       - name: Build Windows binary
-        working-directory: ./src
+        working-directory: ./scripts
         run: .\build.ps1
 
       - name: Upload Windows artifact
@@ -69,7 +69,7 @@ jobs:
         with:
           name: windows-build
           path: |
-            src/123pan-cli-windows.zip
+            scripts/123pan-cli-windows.zip
 
   release:
     name: Create Release
