@@ -3,6 +3,9 @@ set -e
 
 echo "=== 123pan-cli Build Script ==="
 
+# 切换到项目根目录
+cd "$(dirname "$0")/.."
+
 # 安装依赖（CI 环境）
 if [ -n "$CI" ]; then
     sudo apt-get update -qq

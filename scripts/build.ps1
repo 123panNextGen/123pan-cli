@@ -2,6 +2,9 @@ $ErrorActionPreference = "Stop"
 
 Write-Host "=== 123pan-cli Build Script ==="
 
+# 切换到项目根目录
+Set-Location (Split-Path -Parent $PSScriptRoot)
+
 # 安装 upx（CI 环境）
 if ($env:CI) {
     choco install upx -y --no-progress
