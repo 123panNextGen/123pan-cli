@@ -40,7 +40,7 @@ func (c *Client) ShareFile(fileIDList []int64, sharePwd string) (string, error) 
 		return "", fmt.Errorf("分享失败: %s", result.Message)
 	}
 
-	shareURL := "https://www.123pan.com/s/" + result.Data.ShareKey
+	shareURL := "https://www.123pan.cn/s/" + result.Data.ShareKey
 	return shareURL, nil
 }
 

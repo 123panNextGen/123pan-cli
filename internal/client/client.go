@@ -9,7 +9,7 @@ import (
 	"123pan-cli/internal/utils"
 )
 
-const baseURL = "https://www.123pan.com"
+const baseURL = "https://www.123pan.cn"
 
 var deviceTypes = []string{"M2102K1C", "2201122C", "2311BPN23C", "2407FPN8EG", "A401XM"}
 var osVersions = []string{"Android_13", "Android_12", "Android_11", "Android_10"}

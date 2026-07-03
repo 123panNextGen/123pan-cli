@@ -70,7 +70,7 @@ func (s *Session) Authorization() string {
 
 // defaultHeaders 设置默认请求头
 func (s *Session) defaultHeaders(req *http.Request, contentType string) {
-	req.Header.Set("Host", "www.123pan.com")
+	req.Header.Set("Host", "www.123pan.cn")
 	req.Header.Set("platform", "android")
 	req.Header.Set("devicename", "Xiaomi")
 	req.Header.Set("app-version", "61")
