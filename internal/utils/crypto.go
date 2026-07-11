@@ -3,6 +3,7 @@ package utils
 import (
 	"crypto/md5"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"os"
@@ -40,4 +41,31 @@ func RandomHex(n int) string {
 		}
 	}
 	return hex.EncodeToString(b)
+}
+
+// Base64Decode 标准 base64 解码
+func Base64Decode(s string) (string, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// Base64URLDecode URL-safe base64 解码（无填充）
+func Base64URLDecode(s string) (string, error) {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		// 尝试带填充
+		b, err = base64.URLEncoding.DecodeString(s)
+		if err != nil {
+			return "", err
+		}
+	}
+	return string(b), nil
+}
+
+// Base64URLEncode URL-safe base64 编码（无填充）
+func Base64URLEncode(s string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(s))
 }

@@ -26,6 +26,16 @@ type Client struct {
 	allFiles    bool
 	totalFiles  int
 	recycleList []model.FileItem
+
+	// 下载配置
+	multiThreadEnabled bool
+	numThreads         int
+	downloadSpeedLimit int64 // KB/s, 0=不限速
+	uploadSpeedLimit   int64 // KB/s, 0=不限速
+
+	// 代理配置
+	proxyEnabled bool
+	proxyURL     string
 }
 
 // NewClient 创建新的客户端实例
@@ -123,4 +133,66 @@ func (c *Client) TotalFiles() int {
 // GetRecycleBinCached 返回缓存的回收站列表
 func (c *Client) GetRecycleBinCached() []model.FileItem {
 	return c.recycleList
+}
+
+// ===================== 下载/上传配置 =====================
+
+// SetMultiThread 设置多线程下载
+func (c *Client) SetMultiThread(enabled bool, numThreads int) {
+	c.multiThreadEnabled = enabled
+	if numThreads < 1 {
+		numThreads = 4
+	}
+	if numThreads > 16 {
+		numThreads = 16
+	}
+	c.numThreads = numThreads
+}
+
+// IsMultiThreadEnabled 返回是否启用多线程下载
+func (c *Client) IsMultiThreadEnabled() bool {
+	return c.multiThreadEnabled
+}
+
+// NumThreads 返回下载线程数
+func (c *Client) NumThreads() int {
+	if c.numThreads <= 0 {
+		return 4
+	}
+	return c.numThreads
+}
+
+// SetDownloadSpeedLimit 设置下载速度限制（KB/s），0 表示不限速
+func (c *Client) SetDownloadSpeedLimit(kbps int64) {
+	c.downloadSpeedLimit = kbps
+}
+
+// SetUploadSpeedLimit 设置上传速度限制（KB/s），0 表示不限速
+func (c *Client) SetUploadSpeedLimit(kbps int64) {
+	c.uploadSpeedLimit = kbps
+}
+
+// SetProxy 设置代理 URL，如 "http://127.0.0.1:8080"，传空字符串清除代理
+func (c *Client) SetProxy(proxyURL string) {
+	c.proxyEnabled = proxyURL != ""
+	c.proxyURL = proxyURL
+	c.session.SetProxy(proxyURL)
+}
+
+// ClearProxy 清除代理
+func (c *Client) ClearProxy() {
+	c.SetProxy("")
+}
+
+// SetProxyAuth 通过参数设置代理
+func (c *Client) SetProxyAuth(proxyType, host string, port int, username, password string) {
+	var proxyURL string
+	if host != "" && port > 0 {
+		auth := ""
+		if username != "" && password != "" {
+			auth = username + ":" + password + "@"
+		}
+		proxyURL = proxyType + "://" + auth + host + ":" + fmt.Sprintf("%d", port)
+	}
+	c.SetProxy(proxyURL)
 }

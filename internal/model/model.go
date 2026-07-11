@@ -171,6 +171,19 @@ type FileListResponse struct {
 
 type DownloadInfoData struct {
 	DownloadURL string `json:"DownloadUrl"`
+	RedirectUrl string `json:"RedirectUrl"`
+	RedirectURL string `json:"redirect_url"` // CDN 可能返回小写字段
+}
+
+// ResolvedDownloadURL 返回最终下载 URL（优先 RedirectUrl → redirect_url → DownloadUrl）
+func (d DownloadInfoData) ResolvedDownloadURL() string {
+	if d.RedirectUrl != "" {
+		return d.RedirectUrl
+	}
+	if d.RedirectURL != "" {
+		return d.RedirectURL
+	}
+	return d.DownloadURL
 }
 
 type DownloadInfoResponse struct {
@@ -182,11 +195,12 @@ type DownloadInfoResponse struct {
 // ---------- 上传 ----------
 
 type UploadRequestData struct {
-	FileID   int64  `json:"FileId"`
-	Bucket   string `json:"Bucket"`
-	Key      string `json:"Key"`
-	UploadId string `json:"UploadId"`
-	Reuse    bool   `json:"Reuse"`
+	FileID      int64  `json:"FileId"`
+	Bucket      string `json:"Bucket"`
+	Key         string `json:"Key"`
+	UploadId    string `json:"UploadId"`
+	StorageNode string `json:"StorageNode"`
+	Reuse       bool   `json:"Reuse"`
 }
 
 type UploadRequestResponse struct {
@@ -251,6 +265,13 @@ type UploadCompleteResponse struct {
 	Message string `json:"message"`
 }
 
+// ---------- GitHub 版本检查 ----------
+
+type GitHubRelease struct {
+	TagName string `json:"tag_name"`
+	Name    string `json:"name"`
+}
+
 // ---------- 设备/用户 ----------
 
 type DeviceInfo struct {
@@ -311,10 +332,4 @@ func NewTransferTask(id int, taskType TaskType, name string, size int64) *Transf
 		Pause:    make(chan struct{}, 1),
 		Resume:   make(chan struct{}, 1),
 	}
-}
-
-// ---------- 版本 ----------
-
-type GitHubRelease struct {
-	Name string `json:"name"`
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"time"
 
@@ -162,4 +163,24 @@ func (s *Session) GetJSON(url string, result interface{}) error {
 		return err
 	}
 	return json.Unmarshal(data, result)
+}
+
+// SetProxy 设置 HTTP 代理
+func (s *Session) SetProxy(proxyURL string) {
+	// 重新创建 transport 以应用代理
+	if proxyURL != "" {
+		s.http.Transport = &http.Transport{
+			Proxy: func(req *http.Request) (*url.URL, error) {
+				return url.Parse(proxyURL)
+			},
+		}
+		s.transfer.Transport = &http.Transport{
+			Proxy: func(req *http.Request) (*url.URL, error) {
+				return url.Parse(proxyURL)
+			},
+		}
+	} else {
+		s.http.Transport = nil
+		s.transfer.Transport = nil
+	}
 }

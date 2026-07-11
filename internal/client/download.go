@@ -10,10 +10,10 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"123pan-cli/internal/model"
+	"123pan-cli/internal/utils"
 )
 
 // DownloadLinkInfo 下载链接信息
@@ -23,27 +23,7 @@ type DownloadLinkInfo struct {
 	Size     int64
 }
 
-// progressReader 包装 io.Reader，支持进度回调
-type progressReader struct {
-	reader   io.Reader
-	total    int64
-	read     *int64
-	callback func(downloaded, total int64)
-	limiter  chan struct{} // 简单的速率限制
-}
-
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.reader.Read(p)
-	if n > 0 {
-		atomic.AddInt64(pr.read, int64(n))
-		if pr.callback != nil {
-			pr.callback(atomic.LoadInt64(pr.read), pr.total)
-		}
-	}
-	return n, err
-}
-
-// GetDownloadLink 获取文件下载链接
+// GetDownloadLink 获取文件下载链接（含 URL 重写绕过流量限制）
 func (c *Client) GetDownloadLink(file model.FileItem) (string, error) {
 	var endpoint string
 	var payload interface{}
@@ -66,81 +46,282 @@ func (c *Client) GetDownloadLink(file model.FileItem) (string, error) {
 		}
 	}
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
+	var result model.DownloadInfoResponse
+	if err := c.session.PostJSON(endpoint, payload, &result); err != nil {
 		return "", err
-	}
-
-	resp, err := c.session.Do("POST", endpoint, jsonData)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-
-	var result struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    struct {
-			DownloadURL string `json:"DownloadUrl"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("解析下载链接响应失败: %w", err)
 	}
 	if result.Code != 0 {
-		return "", fmt.Errorf("获取下载链接失败: %s", result.Message)
-	}
-	if result.Data.DownloadURL == "" {
-		return "", fmt.Errorf("空的下载链接")
+		// 5113/5114: 下载流量超出限制，继续尝试 URL 重写绕过
+		if result.Code != 5113 && result.Code != 5114 {
+			return "", fmt.Errorf("获取下载链接失败: %s (code=%d)", result.Message, result.Code)
+		}
 	}
 
-	return c.resolveDownloadURL(result.Data.DownloadURL)
+	// 优先使用 CDN 直链 (redirect_url)
+	directURL := result.Data.ResolvedDownloadURL()
+	if directURL != "" {
+		return directURL, nil
+	}
+
+	// 使用 DownloadUrl + web-pro2 代理重写绕过限制
+	downloadURL := result.Data.DownloadURL
+	if downloadURL == "" {
+		return "", fmt.Errorf("响应中未找到下载链接")
+	}
+
+	rewrittenURL := rewriteDownloadURL(downloadURL)
+	return resolveDownloadURL(rewrittenURL)
 }
 
-// resolveDownloadURL 解析下载 URL 的重定向
-func (c *Client) resolveDownloadURL(rawURL string) (string, error) {
+// ===================== 下载 URL 重写与解析（绕过流量限制） =====================
+
+// rewriteDownloadURL 重写下载 URL，模拟 123pan_unlock.js 的绕过逻辑。
+// 将下载请求重定向到 web-pro2 代理，并添加 auto_redirect=0 参数，
+// 绕过官方 PC 端的下载流量限制。
+func rewriteDownloadURL(rawURL string) string {
+	parsed, err := parseURL(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	if strings.Contains(parsed.Host, "web-pro") {
+		// 已经是 web-pro 域名，解码 params → 添加 auto_redirect → 重新编码
+		qs := parseQuery(parsed.RawQuery)
+		paramsB64 := qs["params"]
+		if paramsB64 != "" {
+			decoded := b64Decode(paramsB64)
+			if decoded == "" {
+				decoded = paramsB64
+			}
+			innerParsed, innerErr := parseURL(decoded)
+			if innerErr == nil {
+				innerQS := parseQuery(innerParsed.RawQuery)
+				innerQS["auto_redirect"] = "0"
+				innerParsed.RawQuery = buildQuery(innerQS)
+				qs["params"] = b64Encode(innerParsed.String())
+				parsed.RawQuery = buildQuery(qs)
+				return parsed.String()
+			}
+		}
+		return rawURL
+	}
+
+	// 非 web-pro 域名，重写为 web-pro2 代理
+	origParsed, err := parseURL(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	origQS := parseQuery(origParsed.RawQuery)
+	origQS["auto_redirect"] = "0"
+	origParsed.RawQuery = buildQuery(origQS)
+
+	proxyURL := fmt.Sprintf(
+		"https://web-pro2.123952.com/download-v2/?params=%s&is_s3=0",
+		b64Encode(origParsed.String()),
+	)
+	return proxyURL
+}
+
+// resolveDownloadURL 解析重定向获取真实下载链接。
+// 优先级：HTTP 3xx Location 头 → HTML body href 链接 → download-v2 base64 params 解码
+func resolveDownloadURL(rawURL string) (string, error) {
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: 10 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
+			return http.ErrUseLastResponse // 不自动跟随重定向
 		},
 	}
 
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
-		return "", err
+		return rawURL, nil
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		// 网络错误时尝试直接解码 download-v2 URL 中的 base64 params
+		if decoded := decodeDownloadV2Params(rawURL); decoded != "" {
+			return decoded, nil
+		}
+		return rawURL, nil
 	}
 	defer resp.Body.Close()
 
-	if loc := resp.Header.Get("Location"); loc != "" {
+	// 1. 优先检查 HTTP 重定向 Location 头
+	if loc := resp.Header.Get("Location"); loc != "" &&
+		(resp.StatusCode == 301 || resp.StatusCode == 302 || resp.StatusCode == 303 ||
+			resp.StatusCode == 307 || resp.StatusCode == 308) {
 		return loc, nil
 	}
 
-	b, _ := io.ReadAll(resp.Body)
+	// 2. 检查 HTML body 中的 href 链接
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 	txt := string(b)
-
-	// 尝试从响应体中提取 URL
 	re := regexp.MustCompile(`href='(https?://[^']+)'`)
 	if m := re.FindStringSubmatch(txt); len(m) >= 2 {
 		return m[1], nil
 	}
-	re = regexp.MustCompile(`href="(https?://[^"]+)"`)
-	if m := re.FindStringSubmatch(txt); len(m) >= 2 {
-		return m[1], nil
+
+	// 3. 兜底：如果是 download-v2 URL，直接解码 base64 params
+	if decoded := decodeDownloadV2Params(rawURL); decoded != "" {
+		return decoded, nil
 	}
 
 	return rawURL, nil
 }
 
-// DownloadFile 单线程下载文件
+// decodeDownloadV2Params 从 download-v2 URL 中解码 base64 编码的下载链接。
+// 格式: https://web-pro2.123952.com/download-v2/?params=<base64>&is_s3=0
+func decodeDownloadV2Params(rawURL string) string {
+	parsed, err := parseURL(rawURL)
+	if err != nil {
+		return ""
+	}
+	if !strings.Contains(parsed.Path, "/download-v2/") {
+		return ""
+	}
+	qs := parseQuery(parsed.RawQuery)
+	paramsB64 := qs["params"]
+	if paramsB64 == "" {
+		return ""
+	}
+	decoded := b64Decode(paramsB64)
+	if strings.HasPrefix(decoded, "http") {
+		return decoded
+	}
+	return ""
+}
+
+// checkJSONRedirect 检测响应是否为 CDN JSON 重定向，若是则返回 redirect_url。
+// CDN 有时返回 JSON 而非文件内容: {"code":0,"data":{"redirect_url":"https://..."}}
+func checkJSONRedirect(contentType string, body []byte) string {
+	if !strings.Contains(contentType, "json") {
+		return ""
+	}
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			RedirectUrl string `json:"RedirectUrl"`
+			RedirectURL string `json:"redirect_url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return ""
+	}
+	if result.Code != 0 {
+		return ""
+	}
+	if result.Data.RedirectUrl != "" {
+		return result.Data.RedirectUrl
+	}
+	return result.Data.RedirectURL
+}
+
+// ===================== Base64 编解码（URL-safe） =====================
+
+func b64Decode(data string) string {
+	if data == "" {
+		return ""
+	}
+	if decoded, err := utils.Base64Decode(data); err == nil {
+		return decoded
+	}
+	if decoded, err := utils.Base64URLDecode(data); err == nil {
+		return decoded
+	}
+	return data
+}
+
+func b64Encode(data string) string {
+	return utils.Base64URLEncode(data)
+}
+
+// ===================== URL 解析辅助 =====================
+
+type simpleURL struct {
+	Scheme   string
+	Host     string
+	Path     string
+	RawQuery string
+}
+
+func (u *simpleURL) String() string {
+	s := u.Scheme + "://" + u.Host + u.Path
+	if u.RawQuery != "" {
+		s += "?" + u.RawQuery
+	}
+	return s
+}
+
+func parseURL(raw string) (*simpleURL, error) {
+	// 简单的手动解析，避免引入 net/url 的复杂行为
+	u := &simpleURL{}
+
+	// Scheme
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return nil, fmt.Errorf("invalid URL: %s", raw)
+	}
+	u.Scheme = raw[:schemeEnd]
+	rest := raw[schemeEnd+3:]
+
+	// Host + Path + Query
+	slashIdx := strings.IndexByte(rest, '/')
+	if slashIdx < 0 {
+		u.Host = rest
+		u.Path = "/"
+	} else {
+		u.Host = rest[:slashIdx]
+		pathAndQuery := rest[slashIdx:]
+		qIdx := strings.IndexByte(pathAndQuery, '?')
+		if qIdx < 0 {
+			u.Path = pathAndQuery
+		} else {
+			u.Path = pathAndQuery[:qIdx]
+			u.RawQuery = pathAndQuery[qIdx+1:]
+		}
+	}
+	return u, nil
+}
+
+func parseQuery(query string) map[string]string {
+	result := make(map[string]string)
+	if query == "" {
+		return result
+	}
+	for _, pair := range strings.Split(query, "&") {
+		kv := strings.SplitN(pair, "=", 2)
+		if len(kv) == 2 {
+			result[kv[0]] = kv[1]
+		}
+	}
+	return result
+}
+
+func buildQuery(qs map[string]string) string {
+	parts := make([]string, 0, len(qs))
+	for k, v := range qs {
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, "&")
+}
+
+// DownloadFile 单线程下载文件（含 JSON 重定向处理和连接重试）
 func (c *Client) DownloadFile(downloadURL, filename, dir string) (string, error) {
+	return c.downloadSingle(downloadURL, filename, dir, nil, nil, 0)
+}
+
+// downloadSingle 单线程流式下载（内部实现，支持 JSON 重定向和重试）
+func (c *Client) downloadSingle(
+	downloadURL, filename, dir string,
+	callback func(downloaded, total int64),
+	task *model.TransferTask,
+	redirectCount int,
+) (string, error) {
+	if redirectCount >= 3 {
+		return "", fmt.Errorf("JSON 重定向次数过多，放弃下载: %s", filename)
+	}
 	if dir == "" {
 		dir = "downloads"
 	}
@@ -155,127 +336,116 @@ func (c *Client) DownloadFile(downloadURL, filename, dir string) (string, error)
 		return "", fmt.Errorf("文件已存在: %s", outPath)
 	}
 
-	req, err := http.NewRequest("GET", downloadURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	// 连接级错误重试：最多 3 次
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		req, err := http.NewRequest("GET", downloadURL, nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
 
-	resp, err := c.session.Transfer().Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+		resp, err := c.session.Transfer().Do(req)
+		if err != nil {
+			if attempt < maxRetries-1 {
+				wait := time.Duration(attempt+1) * 2 * time.Second
+				time.Sleep(wait)
+				os.Remove(tmpPath)
+				continue
+			}
+			return "", err
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("下载失败 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-	}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			resp.Body.Close()
+			return "", fmt.Errorf("下载失败 HTTP %d: %s", resp.StatusCode, filename)
+		}
 
-	f, err := os.Create(tmpPath)
-	if err != nil {
-		return "", err
-	}
+		// 检测 JSON 重定向响应
+		contentType := resp.Header.Get("Content-Type")
+		if strings.Contains(contentType, "json") {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			redirectURL := checkJSONRedirect(contentType, body)
+			if redirectURL != "" && strings.HasPrefix(redirectURL, "http") {
+				return c.downloadSingle(redirectURL, filename, dir, callback, task, redirectCount+1)
+			}
+			// JSON 但不是有效重定向
+			return "", fmt.Errorf("下载 %s 失败，CDN 返回: %s", filename, string(body))
+		}
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+		total := resp.ContentLength
+		var downloaded int64
+
+		f, err := os.Create(tmpPath)
+		if err != nil {
+			resp.Body.Close()
+			return "", err
+		}
+
+		buf := make([]byte, 32*1024)
+		readErr := error(nil)
+		for readErr == nil {
+			if task != nil {
+				select {
+				case <-task.Cancel:
+					f.Close()
+					resp.Body.Close()
+					os.Remove(tmpPath)
+					return "", fmt.Errorf("下载已取消")
+				case <-task.Pause:
+					<-task.Resume
+				default:
+				}
+			}
+
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := f.Write(buf[:n]); writeErr != nil {
+					f.Close()
+					resp.Body.Close()
+					os.Remove(tmpPath)
+					return "", writeErr
+				}
+				downloaded += int64(n)
+				if callback != nil {
+					callback(downloaded, total)
+				}
+				if total > 0 && task != nil {
+					task.Progress = int(downloaded * 100 / total)
+				}
+			}
+			readErr = err
+		}
+		resp.Body.Close()
 		f.Close()
-		os.Remove(tmpPath)
-		return "", err
-	}
-	f.Close()
 
-	if err := os.Rename(tmpPath, outPath); err != nil {
-		os.Remove(tmpPath)
-		return "", err
+		if readErr != nil && readErr != io.EOF {
+			os.Remove(tmpPath)
+			if attempt < maxRetries-1 {
+				wait := time.Duration(attempt+1) * 2 * time.Second
+				time.Sleep(wait)
+				continue
+			}
+			return "", readErr
+		}
+
+		if err := os.Rename(tmpPath, outPath); err != nil {
+			os.Remove(tmpPath)
+			return "", err
+		}
+		return outPath, nil
 	}
-	return outPath, nil
+	return "", fmt.Errorf("下载失败：超过最大重试次数")
 }
 
-// DownloadFileWithProgress 下载文件（带进度回调）
+// DownloadFileWithProgress 下载文件（带进度回调和任务控制）
 func (c *Client) DownloadFileWithProgress(
 	downloadURL, filename, dir string,
 	callback func(downloaded, total int64),
 	task *model.TransferTask,
 ) (string, error) {
-	if dir == "" {
-		dir = "downloads"
-	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", err
-	}
-
-	outPath := filepath.Join(dir, filename)
-	tmpPath := outPath + ".123pan.tmp"
-
-	if _, err := os.Stat(outPath); err == nil {
-		return "", fmt.Errorf("文件已存在: %s", outPath)
-	}
-
-	req, err := http.NewRequest("GET", downloadURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-
-	resp, err := c.session.Transfer().Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("下载失败 HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
-	}
-
-	total := resp.ContentLength
-	var downloaded int64
-
-	f, err := os.Create(tmpPath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	buf := make([]byte, 32*1024)
-	for {
-		select {
-		case <-task.Cancel:
-			os.Remove(tmpPath)
-			return "", fmt.Errorf("下载已取消")
-		case <-task.Pause:
-			<-task.Resume
-		default:
-		}
-
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := f.Write(buf[:n]); writeErr != nil {
-				os.Remove(tmpPath)
-				return "", writeErr
-			}
-			downloaded += int64(n)
-			if callback != nil {
-				callback(downloaded, total)
-			}
-			if total > 0 && task != nil {
-				task.Progress = int(downloaded * 100 / total)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			os.Remove(tmpPath)
-			return "", readErr
-		}
-	}
-
-	if err := os.Rename(tmpPath, outPath); err != nil {
-		os.Remove(tmpPath)
-		return "", err
-	}
-	return outPath, nil
+	return c.downloadSingle(downloadURL, filename, dir, callback, task, 0)
 }
 
 // DownloadFileChunked 多线程分片下载

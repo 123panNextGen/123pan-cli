@@ -91,8 +91,20 @@ func (c *Client) uploadFileStream(
 	uploadKey := uploadResp.Data.Key
 	uploadID := uploadResp.Data.UploadId
 	fileID := uploadResp.Data.FileID
+	storageNode := uploadResp.Data.StorageNode
 
-	// 2. 分块上传
+	// 2. 初始化分片上传会话
+	startData := map[string]interface{}{
+		"bucket":      bucket,
+		"key":         uploadKey,
+		"uploadId":    uploadID,
+		"storageNode": storageNode,
+	}
+	if err := c.session.PostJSON(baseURL+"/b/api/file/s3_list_upload_parts", startData, nil); err != nil {
+		return 0, err
+	}
+
+	// 3. 分块上传
 	f, err := os.Open(filePath)
 	if err != nil {
 		return 0, err
@@ -124,7 +136,7 @@ func (c *Client) uploadFileStream(
 			"partNumberEnd":   partNumber + 1,
 			"partNumberStart": partNumber,
 			"uploadId":        uploadID,
-			"StorageNode":     "std",
+			"StorageNode":     storageNode,
 		}
 
 		var partResp struct {
@@ -173,23 +185,23 @@ func (c *Client) uploadFileStream(
 		}
 	}
 
-	// 3. 列出上传分片
+	// 4. 列出上传分片
 	listPartsData := map[string]interface{}{
 		"bucket":      bucket,
 		"key":         uploadKey,
 		"uploadId":    uploadID,
-		"storageNode": "std",
+		"storageNode": storageNode,
 	}
 	if err := c.session.PostJSON(baseURL+"/b/api/file/s3_list_upload_parts", listPartsData, nil); err != nil {
 		return 0, err
 	}
 
-	// 4. 完成分片上传
+	// 5. 完成分片上传
 	completeData := map[string]interface{}{
 		"bucket":      bucket,
 		"key":         uploadKey,
 		"uploadId":    uploadID,
-		"storageNode": "std",
+		"storageNode": storageNode,
 	}
 	var compResp model.UploadCompleteResponse
 	if err := c.session.PostJSON(baseURL+"/b/api/file/s3_complete_multipart_upload", completeData, &compResp); err != nil {
@@ -201,7 +213,7 @@ func (c *Client) uploadFileStream(
 		time.Sleep(3 * time.Second)
 	}
 
-	// 5. 确认上传完成
+	// 6. 确认上传完成
 	closeData := map[string]interface{}{"fileId": fileID}
 	var closeResp model.UploadCompleteResponse
 	if err := c.session.PostJSON(baseURL+"/b/api/file/upload_complete", closeData, &closeResp); err != nil {
