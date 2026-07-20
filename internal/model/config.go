@@ -73,6 +73,11 @@ func SaveConfig() error {
 	configLock.Lock()
 	defer configLock.Unlock()
 	cfg := LoadConfig()
+	return writeConfigLocked(cfg)
+}
+
+// writeConfigLocked 写入配置（调用方必须持有 configLock 写锁）
+func writeConfigLocked(cfg *Config) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -93,13 +98,25 @@ func GetAccount(userName string) *Account {
 	return nil
 }
 
+// ListAccounts 返回所有已保存的账号列表
+func ListAccounts() []Account {
+	cfg := LoadConfig()
+	configLock.RLock()
+	defer configLock.RUnlock()
+	var accounts []Account
+	for _, acc := range cfg.Accounts {
+		accounts = append(accounts, acc)
+	}
+	return accounts
+}
+
 func SaveAccount(acc Account) error {
 	cfg := LoadConfig()
 	configLock.Lock()
 	defer configLock.Unlock()
 	cfg.Accounts[acc.UserName] = acc
 	cfg.CurrentAccount = acc.UserName
-	return SaveConfig()
+	return writeConfigLocked(cfg)
 }
 
 func GetSetting(key string, defaultVal any) any {
@@ -132,5 +149,5 @@ func SetSetting(key string, value any) error {
 	configLock.Lock()
 	defer configLock.Unlock()
 	cfg.Settings[key] = value
-	return SaveConfig()
+	return writeConfigLocked(cfg)
 }

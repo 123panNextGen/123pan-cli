@@ -420,7 +420,7 @@ func (c *Client) downloadSingle(
 		resp.Body.Close()
 		f.Close()
 
-		if readErr != nil && readErr != io.EOF {
+		if readErr != io.EOF {
 			os.Remove(tmpPath)
 			if attempt < maxRetries-1 {
 				wait := time.Duration(attempt+1) * 2 * time.Second

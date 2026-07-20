@@ -14,6 +14,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// loginResultMsg 异步登录结果消息
+type loginResultMsg struct {
+	err error
+}
+
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -152,6 +157,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case loginResultMsg:
+		if msg.err != nil {
+			m.message = fmt.Sprintf("登录失败: %v", msg.err)
+			m.messageType = "error"
+			m.loginStep = 0
+			m.inputs[0].Focus()
+			m.inputs[1].Blur()
+		} else {
+			m.message = "登录成功！"
+			m.messageType = "success"
+			m.screen = screenMain
+			m.client.RefreshFileList()
+			m.files = m.client.FileList()
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.confirmMode {
 			return m.handleConfirmKey(msg)
@@ -207,15 +228,18 @@ func (m Model) viewLogin() string {
 
 	if m.message != "" {
 		style := statusStyle
-		if m.messageType == "error" {
+		switch m.messageType {
+		case "error":
 			style = errorStyle
-		} else if m.messageType == "success" {
+		case "success":
 			style = successStyle
 		}
-		b.WriteString("\n" + style.Render(m.message))
+		b.WriteString("\n")
+		b.WriteString(style.Render(m.message))
 	}
 
-	b.WriteString("\n\n" + helpStyle.Render("Tab 切换 | Enter 确认 | Esc 返回"))
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render("Tab 切换 | Enter 确认 | Esc 返回"))
 	return b.String()
 }
 
@@ -247,23 +271,28 @@ func (m Model) handleLoginKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.messageType = "error"
 			return m, nil
 		}
-		if err := m.client.LoginWithCredentials(userName, password); err != nil {
-			m.message = fmt.Sprintf("登录失败: %v", err)
-			m.messageType = "error"
-			return m, nil
+		// 异步登录，不阻塞 UI
+		m.message = "登录中..."
+		m.messageType = "info"
+		return m, func() tea.Msg {
+			err := m.client.LoginWithCredentials(userName, password)
+			return loginResultMsg{err: err}
 		}
-		m.message = "登录成功！"
-		m.messageType = "success"
-		m.screen = screenMain
-		m.client.RefreshFileList()
-		m.files = m.client.FileList()
-		return m, nil
 
 	case "esc":
 		m.screen = screenMain
 		return m, nil
+
+	default:
+		// 将其他按键传递给当前聚焦的输入框
+		var cmd tea.Cmd
+		if m.loginStep == 0 {
+			m.inputs[0], cmd = m.inputs[0].Update(msg)
+		} else {
+			m.inputs[1], cmd = m.inputs[1].Update(msg)
+		}
+		return m, cmd
 	}
-	return m, nil
 }
 
 // ----------- 主界面 -----------
@@ -315,7 +344,8 @@ func (m Model) renderFileList() string {
 			style.Render(utils.TruncateString(f.FileName, 40)),
 			statusStyle.Render(utils.FormatFileSize(f.Size)),
 		)
-		b.WriteString(line + "\n")
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -568,24 +598,30 @@ func (m Model) viewInput() string {
 
 	if m.confirmMode {
 		b.WriteString(m.confirmMsg)
-		b.WriteString("\n\n" + helpStyle.Render("y=确认 n=取消"))
+		b.WriteString("\n\n")
+		b.WriteString(helpStyle.Render("y=确认 n=取消"))
 		return b.String()
 	}
 
-	b.WriteString(m.inputPrompt + "\n")
-	b.WriteString(m.inputs[0].View() + "\n")
+	b.WriteString(m.inputPrompt)
+	b.WriteString("\n")
+	b.WriteString(m.inputs[0].View())
+	b.WriteString("\n")
 
 	if m.message != "" {
 		style := statusStyle
-		if m.messageType == "error" {
+		switch m.messageType {
+		case "error":
 			style = errorStyle
-		} else if m.messageType == "success" {
+		case "success":
 			style = successStyle
 		}
-		b.WriteString("\n" + style.Render(m.message))
+		b.WriteString("\n")
+		b.WriteString(style.Render(m.message))
 	}
 
-	b.WriteString("\n\n" + helpStyle.Render("Enter 确认 | Esc 取消"))
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render("Enter 确认 | Esc 取消"))
 	return b.String()
 }
 
@@ -652,8 +688,13 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.message = "已取消"
 		m.messageType = "info"
 		return m, nil
+
+	default:
+		// 将其他按键传递给输入框
+		var cmd tea.Cmd
+		m.inputs[0], cmd = m.inputs[0].Update(msg)
+		return m, cmd
 	}
-	return m, nil
 }
 
 // ----------- 辅助 -----------

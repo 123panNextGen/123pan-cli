@@ -1,33 +1,59 @@
 package client
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
-	"strings"
+	"net/http"
+	"time"
 
 	"123pan-cli/internal/model"
 )
 
 // Login 登录
 func (c *Client) Login() error {
-	form := url.Values{}
-	form.Set("type", "1")
-	form.Set("passport", c.session.UserInfo().UserName)
-	form.Set("password", c.session.UserInfo().Password)
+	loginBody := map[string]interface{}{
+		"type":     1,
+		"passport": c.session.UserInfo().UserName,
+		"password": c.session.UserInfo().Password,
+	}
 
-	resp, err := c.session.Do("POST", baseURL+"/b/api/user/sign_in", strings.NewReader(form.Encode()))
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(loginBody); err != nil {
+		return fmt.Errorf("序列化登录请求失败: %w", err)
+	}
+	bodyBytes := bytes.TrimRight(buf.Bytes(), "\n")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/b/api/user/sign_in", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
+	c.defaultHeadersForReq(req, "application/json")
+
+	resp, err := c.session.HTTP().Do(req)
+	if err != nil {
+		return fmt.Errorf("登录请求失败: %w", err)
+	}
 	defer resp.Body.Close()
+
 	body, _ := io.ReadAll(resp.Body)
 
 	var result model.LoginResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("登录响应解析失败: %w", err)
+		preview := string(body)
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		return fmt.Errorf("登录响应解析失败 (HTTP %d): %w\n响应: %s", resp.StatusCode, err, preview)
 	}
+
 	if result.Code != 200 {
 		return fmt.Errorf("登录失败: %s (code=%d)", result.Message, result.Code)
 	}

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,7 +23,10 @@ func (c *Client) listFilesPaged(parentFileID int64, page, limit int) ([]model.Fi
 		baseURL, limit, parentFileID, page,
 	)
 
-	req, err := http.NewRequest("GET", url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -39,6 +43,7 @@ func (c *Client) listFilesPaged(parentFileID int64, page, limit int) ([]model.Fi
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("文件列表解析失败: %w", err)
 	}
+
 	if result.Code == 2 {
 		return nil, fmt.Errorf("token 过期，请重新登录")
 	}

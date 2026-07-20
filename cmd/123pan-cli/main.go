@@ -48,14 +48,21 @@ func runTUI() {
 	var c *client.Client
 
 	// 尝试从配置加载
-	acc := model.GetAccount("")
-	if acc != nil && acc.Authorization != "" {
+	accounts := model.ListAccounts()
+	if len(accounts) == 1 && accounts[0].Authorization != "" {
+		// 只有一个已授权账号，自动加载
 		var err error
-		c, err = client.NewClientFromConfig(acc.UserName)
-		if err != nil {
-			c = client.NewClient()
-		} else {
+		c, err = client.NewClientFromConfig(accounts[0].UserName)
+		if err == nil {
 			c.RefreshFileList()
+		} else {
+			c = client.NewClient()
+		}
+	} else if len(accounts) > 1 {
+		// 多个账号，让用户选择
+		c = selectAccount(accounts)
+		if c == nil {
+			c = client.NewClient()
 		}
 	} else {
 		c = client.NewClient()
@@ -75,16 +82,12 @@ func runCLI(username, password string) {
 	fmt.Println()
 
 	var c *client.Client
-	var err error
 
 	// 尝试从配置加载
 	if username == "" && password == "" {
-		acc := model.GetAccount("")
-		if acc != nil {
-			c, err = client.NewClientFromConfig(acc.UserName)
-			if err == nil {
-				fmt.Println("已从配置加载账号:", acc.UserName)
-			}
+		accounts := model.ListAccounts()
+		if len(accounts) > 0 {
+			c = selectAccount(accounts)
 		}
 	}
 
@@ -407,5 +410,45 @@ func printFiles(files []model.FileItem) {
 			sizeStr = fmt.Sprintf("  %s", utils.FormatFileSize(f.Size))
 		}
 		fmt.Printf("[%d] %s %-40s %s%s\n", i+1, icon, f.FileName, typeName, sizeStr)
+	}
+}
+
+// selectAccount 让用户从已保存的账号中选择
+func selectAccount(accounts []model.Account) *client.Client {
+	fmt.Println("检测到已保存的账号:")
+	for i, acc := range accounts {
+		fmt.Printf("  [%d] %s\n", i+1, acc.UserName)
+	}
+	fmt.Printf("  [%d] 使用新账号登录\n", len(accounts)+1)
+	fmt.Println()
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Printf("请选择 (1-%d): ", len(accounts)+1)
+		if !scanner.Scan() {
+			return nil
+		}
+		choice := strings.TrimSpace(scanner.Text())
+
+		idx, err := strconv.Atoi(choice)
+		if err != nil || idx < 1 || idx > len(accounts)+1 {
+			fmt.Println("无效的选择，请重新输入")
+			continue
+		}
+
+		if idx == len(accounts)+1 {
+			// 用户选择使用新账号
+			return nil
+		}
+
+		// 尝试用已有账号登录
+		acc := accounts[idx-1]
+		c, err := client.NewClientFromConfig(acc.UserName)
+		if err != nil {
+			fmt.Printf("加载账号 '%s' 失败: %v\n", acc.UserName, err)
+			continue
+		}
+		fmt.Printf("已加载账号: %s\n", acc.UserName)
+		return c
 	}
 }

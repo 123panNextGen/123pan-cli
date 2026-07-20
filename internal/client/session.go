@@ -71,12 +71,10 @@ func (s *Session) Authorization() string {
 
 // defaultHeaders 设置默认请求头
 func (s *Session) defaultHeaders(req *http.Request, contentType string) {
-	req.Header.Set("Host", "www.123pan.cn")
 	req.Header.Set("platform", "android")
 	req.Header.Set("devicename", "Xiaomi")
 	req.Header.Set("app-version", "61")
 	req.Header.Set("x-app-version", "2.4.0")
-	req.Header.Set("accept-encoding", "gzip")
 
 	if s.userInfo != nil {
 		req.Header.Set("User-Agent", fmt.Sprintf("123pan/v2.4.0(%s;Xiaomi)", s.userInfo.Device.OS))

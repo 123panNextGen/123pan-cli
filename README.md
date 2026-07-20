@@ -8,7 +8,7 @@
     <a href="https://github.com/123pannextgen/123pan-cli/stargazers"><img src="https://img.shields.io/github/stars/123pannextgen/123pan-cli" alt="Stars"></a>
     <a href="https://github.com/123pannextgen/123pan-cli/issues"><img src="https://img.shields.io/github/issues/123pannextgen/123pan-cli"></a>
     <a href="https://github.com/123pannextgen/123pan-cli/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License"></a>
-    <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/go-1.22%2B-blue" alt="Go Version"></a>
+    <a href="https://go.dev/dl/"><img src="https://img.shields.io/badge/go-1.25%2B-blue" alt="Go Version"></a>
     <a href="https://github.com/123pannextgen/123pan-cli/releases"><img src="https://img.shields.io/github/v/tag/123pannextgen/123pan-cli?label=release" alt="latest_release"></a>
     <a href="https://github.com/123pannextgen/123pan-cli/releases"><img src="https://img.shields.io/github/downloads/123pannextgen/123pan-cli/total" alt="Downloads"></a>
   </div>
