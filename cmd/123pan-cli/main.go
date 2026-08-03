@@ -40,7 +40,7 @@ func main() {
 	flag.Parse()
 
 	if versionFlag {
-		fmt.Println("123pan-cli v1.1.2")
+		fmt.Println("123pan-cli v1.1.3")
 		return
 	}
 
@@ -85,7 +85,7 @@ func runTUI() {
 }
 
 func runCLI(username, password string) {
-	fmt.Println("123pan-cli v1.1.2")
+	fmt.Println("123pan-cli v1.1.3")
 	fmt.Println("https://github.com/123panNextGen/123pan-cli")
 	fmt.Println()
 
@@ -371,7 +371,7 @@ func handleCommand(c *client.Client, args []string) bool {
 		return false
 
 	case "version":
-		fmt.Println("123pan-cli v1.1.2")
+		fmt.Println("123pan-cli v1.1.3")
 
 	default:
 		fmt.Printf("未知命令: %s (输入 help 查看帮助)\n", args[0])
