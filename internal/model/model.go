@@ -10,6 +10,7 @@ package model
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"time"
 )
@@ -122,7 +123,11 @@ func parseInt64OrZero(raw json.RawMessage) int64 {
 }
 
 func parseIntOrZero(raw json.RawMessage) int {
-	return int(parseInt64OrZero(raw))
+	v := parseInt64OrZero(raw)
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0
+	}
+	return int(v)
 }
 
 func parseBoolOrFalse(raw json.RawMessage) bool {
